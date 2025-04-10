@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 import { GameState, Player, Card as CardType } from './types/game'
 import { createDeck, calculateScore } from './utils/gameUtils'
 import Card from './components/Card'
 
 function App() {
+  // Create audio elements with the correct paths
+  const winSound = new Audio('/sounds/win.mp3')
+  const loseSound = new Audio('/sounds/lose.mp3')
+
   const initialGameState = (): GameState => {
     const deck = createDeck()
-    return {
+    const initialState = {
       deck,
       player: {
         hand: [deck.pop()!, deck.pop()!],
@@ -22,36 +26,78 @@ function App() {
       gameOver: false,
       winner: null
     }
+    
+    // Calculate initial scores
+    initialState.player.score = calculateScore(initialState.player.hand)
+    initialState.dealer.score = calculateScore(initialState.dealer.hand)
+    
+    return initialState
   }
 
   const [gameState, setGameState] = useState<GameState>(initialGameState())
+  const [animatingCard, setAnimatingCard] = useState(false)
+  const [soundEnabled, setSoundEnabled] = useState(false)
 
-  const updateScores = (state: GameState) => {
-    state.player.score = calculateScore(state.player.hand)
-    state.dealer.score = calculateScore(state.dealer.hand)
-    state.player.busted = state.player.score > 21
-    state.dealer.busted = state.dealer.score > 21
-  }
+  useEffect(() => {
+    // Preload sounds
+    const sounds = [winSound, loseSound]
+    Promise.all(sounds.map(sound => {
+      sound.volume = 0.5 // Set volume to 50%
+      return new Promise((resolve) => {
+        sound.addEventListener('canplaythrough', resolve, { once: true })
+        sound.load()
+      })
+    })).then(() => {
+      setSoundEnabled(true)
+      console.log('Sounds loaded successfully')
+    }).catch(error => {
+      console.error('Error loading sounds:', error)
+    })
 
-  const hit = () => {
-    if (gameState.gameOver) return
+    // Cleanup function
+    return () => {
+      sounds.forEach(sound => {
+        sound.pause()
+        sound.currentTime = 0
+      })
+    }
+  }, [])
 
+  const playSound = useCallback(async (result: 'win' | 'lose') => {
+    if (!soundEnabled) return
+
+    try {
+      const sound = result === 'win' ? winSound : loseSound
+      sound.currentTime = 0
+      await sound.play()
+    } catch (error) {
+      console.error('Error playing sound:', error)
+    }
+  }, [soundEnabled])
+
+  const hit = async () => {
+    if (gameState.gameOver || animatingCard) return
+
+    setAnimatingCard(true)
     const newState = { ...gameState }
     const card = newState.deck.pop()
     if (!card) return
 
     newState.player.hand.push(card)
-    updateScores(newState)
+    newState.player.score = calculateScore(newState.player.hand)
+    newState.player.busted = newState.player.score > 21
 
     if (newState.player.busted) {
       newState.gameOver = true
       newState.winner = 'dealer'
+      await playSound('lose')
     }
 
     setGameState(newState)
+    setTimeout(() => setAnimatingCard(false), 500)
   }
 
-  const stand = () => {
+  const stand = async () => {
     if (gameState.gameOver) return
 
     const newState = { ...gameState }
@@ -63,20 +109,23 @@ function App() {
       newState.dealer.hand.push(card)
     }
 
-    updateScores(newState)
-    newState.gameOver = true
+    newState.dealer.score = calculateScore(newState.dealer.hand)
+    newState.dealer.busted = newState.dealer.score > 21
 
-    // Determine winner
     if (newState.dealer.busted) {
       newState.winner = 'player'
+      await playSound('win')
     } else if (newState.dealer.score > newState.player.score) {
       newState.winner = 'dealer'
+      await playSound('lose')
     } else if (newState.dealer.score < newState.player.score) {
       newState.winner = 'player'
+      await playSound('win')
     } else {
       newState.winner = 'tie'
     }
 
+    newState.gameOver = true
     setGameState(newState)
   }
 
@@ -85,60 +134,81 @@ function App() {
   }
 
   return (
-    <div className="app" style={{ padding: '20px', textAlign: 'center' }}>
-      <h1>Blackjack</h1>
-      
-      <div className="dealer-section" style={{ marginBottom: '40px' }}>
-        <h2>Dealer's Hand {gameState.gameOver && `(Score: ${gameState.dealer.score})`}</h2>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
-          {gameState.dealer.hand.map((card, index) => (
-            <div key={`${card.suit}-${card.rank}`}>
-              {(index === 0 || gameState.gameOver) ? (
-                <Card card={card} />
-              ) : (
-                <div className="card-back" style={{
-                  width: '100px',
-                  height: '140px',
-                  border: '2px solid #000',
-                  borderRadius: '10px',
-                  backgroundColor: '#b22222',
-                  margin: '5px'
-                }} />
-              )}
-            </div>
-          ))}
+    <div className="app">
+      <div className="game-container">
+        <h1>♠️ Blackjack ♦️</h1>
+        
+        <div className="dealer-section">
+          <h2>Dealer's Hand</h2>
+          <div className="score-display">
+            {gameState.gameOver && `Score: ${gameState.dealer.score}`}
+          </div>
+          <div className="card-container">
+            {gameState.dealer.hand.map((card, index) => (
+              <div key={`${card.suit}-${card.rank}`}>
+                {(index === 0 || gameState.gameOver) ? (
+                  <Card card={card} index={index} />
+                ) : (
+                  <div className="card-back" style={{
+                    border: '2px solid #000',
+                    borderRadius: '12px',
+                    margin: '0',
+                    animationDelay: `${index * 0.1}s`
+                  }} />
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
 
-      <div className="player-section" style={{ marginBottom: '20px' }}>
-        <h2>Your Hand (Score: {gameState.player.score})</h2>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
-          {gameState.player.hand.map((card) => (
-            <Card key={`${card.suit}-${card.rank}`} card={card} />
-          ))}
+        <div className="player-section">
+          <h2>Your Hand</h2>
+          <div className="score-display">Score: {gameState.player.score}</div>
+          <div className="card-container">
+            {gameState.player.hand.map((card, index) => (
+              <Card 
+                key={`${card.suit}-${card.rank}`} 
+                card={card}
+                index={index}
+              />
+            ))}
+          </div>
         </div>
-      </div>
 
-      <div className="controls" style={{ marginBottom: '20px' }}>
-        {!gameState.gameOver ? (
-          <>
-            <button onClick={hit} style={{ margin: '0 10px', padding: '10px 20px' }}>Hit</button>
-            <button onClick={stand} style={{ margin: '0 10px', padding: '10px 20px' }}>Stand</button>
-          </>
-        ) : (
-          <button onClick={newGame} style={{ padding: '10px 20px' }}>New Game</button>
+        <div className="controls">
+          {!gameState.gameOver ? (
+            <>
+              <button 
+                onClick={hit} 
+                disabled={animatingCard}
+                style={{ opacity: animatingCard ? 0.7 : 1 }}
+              >
+                Hit
+              </button>
+              <button 
+                onClick={stand}
+                disabled={animatingCard}
+                style={{ opacity: animatingCard ? 0.7 : 1 }}
+              >
+                Stand
+              </button>
+            </>
+          ) : (
+            <button onClick={newGame}>New Game</button>
+          )}
+        </div>
+
+        {gameState.gameOver && (
+          <div className="game-result">
+            <h2>
+              {gameState.winner === 'player' && '🎰 You Win! 🎉'}
+              {gameState.winner === 'dealer' && '😢 Dealer Wins! 🎲'}
+              {gameState.winner === 'tie' && "🤝 It's a Tie! 🎲"}
+            </h2>
+          </div>
         )}
       </div>
-
-      {gameState.gameOver && (
-        <div className="game-result" style={{ marginTop: '20px' }}>
-          <h2>
-            {gameState.winner === 'player' && 'You Win! 🎉'}
-            {gameState.winner === 'dealer' && 'Dealer Wins! 😢'}
-            {gameState.winner === 'tie' && "It's a Tie! 🤝"}
-          </h2>
-        </div>
-      )}
+      <div className="casino-girl" />
     </div>
   )
 }
